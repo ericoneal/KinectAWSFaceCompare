@@ -1,0 +1,383 @@
+﻿
+
+namespace FaceCompare
+{
+
+    using System;
+    using System.Globalization;
+    using System.IO;
+    using System.Windows;
+    using System.Windows.Media;
+    using System.Windows.Media.Imaging;
+    using Microsoft.Kinect;
+
+    using Amazon.Rekognition;
+    using Amazon.Rekognition.Model;
+    using System.Collections.Generic;
+    using Amazon.Runtime;
+    using Amazon;
+    using System.Timers;
+    using System.Threading;
+    using System.ComponentModel;
+
+
+
+
+    /// <summary>
+    /// Interaction logic for MainWindow.xaml
+    /// </summary>
+    public partial class MainWindow : Window
+    {
+        /// <summary>
+        /// Active Kinect sensor
+        /// </summary>
+        private KinectSensor sensor;
+
+        /// <summary>
+        /// Bitmap that will hold color information
+        /// </summary>
+        private WriteableBitmap colorBitmap;
+
+        /// <summary>
+        /// Intermediate storage for the color data received from the camera
+        /// </summary>
+        private byte[] colorPixels;
+
+        private System.Timers.Timer timer;
+
+        private int i = 0;
+        /// <summary>
+        /// Initializes a new instance of the MainWindow class.
+        /// </summary>
+        public MainWindow()
+        {
+            InitializeComponent();
+            timer = new System.Timers.Timer(15000);
+            timer.Elapsed += Timer_Elapsed;
+        }
+
+
+
+        /// <summary>
+        /// Execute startup tasks
+        /// </summary>
+        /// <param name="sender">object sending the event</param>
+        /// <param name="e">event arguments</param>
+        private void WindowLoaded(object sender, RoutedEventArgs e)
+        {
+            // Look through all sensors and start the first connected one.
+            // This requires that a Kinect is connected at the time of app startup.
+            // To make your app robust against plug/unplug, 
+            // it is recommended to use KinectSensorChooser provided in Microsoft.Kinect.Toolkit (See components in Toolkit Browser).
+            foreach (var potentialSensor in KinectSensor.KinectSensors)
+            {
+                if (potentialSensor.Status == KinectStatus.Connected)
+                {
+                    this.sensor = potentialSensor;
+                    break;
+                }
+            }
+
+            if (null != this.sensor)
+            {
+
+                sensor.SkeletonStream.Enable();
+                sensor.SkeletonStream.TrackingMode = SkeletonTrackingMode.Seated;
+                sensor.SkeletonFrameReady += SensorSkeletonFrameReady;
+
+                // Turn on the color stream to receive color frames
+                this.sensor.ColorStream.Enable(ColorImageFormat.RgbResolution640x480Fps30);
+
+                // Allocate space to put the pixels we'll receive
+                this.colorPixels = new byte[this.sensor.ColorStream.FramePixelDataLength];
+
+                // This is the bitmap we'll display on-screen
+                this.colorBitmap = new WriteableBitmap(this.sensor.ColorStream.FrameWidth, this.sensor.ColorStream.FrameHeight, 96.0, 96.0, PixelFormats.Bgr32, null);
+
+                // Set the image we display to point to the bitmap where we'll put the image data
+                this.Image.Source = this.colorBitmap;
+
+                // Add an event handler to be called whenever there is new color frame data
+                this.sensor.ColorFrameReady += this.SensorColorFrameReady;
+
+
+
+                // Start the sensor!
+                try
+                {
+                    this.sensor.Start();
+                }
+                catch (IOException)
+                {
+                    this.sensor = null;
+                }
+            }
+
+            if (null == this.sensor)
+            {
+                this.statusBarText.Text = Properties.Resources.NoKinectReady;
+            }
+        }
+
+
+
+        private void SensorSkeletonFrameReady(object sender, SkeletonFrameReadyEventArgs e)
+        {
+
+            Skeleton[] skeletons = new Skeleton[0];
+
+            using (SkeletonFrame skeletonFrame = e.OpenSkeletonFrame())
+            {
+                if (skeletonFrame != null)
+                {
+                    skeletons = new Skeleton[skeletonFrame.SkeletonArrayLength];
+                    skeletonFrame.CopySkeletonDataTo(skeletons);
+                }
+            }
+
+            if (skeletons.Length != 0)
+            {
+               
+                foreach (Skeleton skel in skeletons)
+                {
+                    if (skel.TrackingState == SkeletonTrackingState.Tracked)
+                    {
+ 
+                        Console.WriteLine("Skeleton Detected");
+
+                        if (i <= 1)
+                        {
+                            timer.Stop();
+                            TakeSnapshot();
+                        }
+                        else
+                        {
+
+                         
+                            timer.Start();
+                        }
+
+                 
+                    }
+
+                }
+
+            }
+
+
+
+
+        }
+
+
+        private void Timer_Elapsed(object sender, ElapsedEventArgs e)
+        {
+            i = 0;
+
+        }
+
+        /// <summary>
+        /// Execute shutdown tasks
+        /// </summary>
+        /// <param name="sender">object sending the event</param>
+        /// <param name="e">event arguments</param>
+        private void WindowClosing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            if (null != this.sensor)
+            {
+                this.sensor.Stop();
+            }
+        }
+
+        /// <summary>
+        /// Event handler for Kinect sensor's ColorFrameReady event
+        /// </summary>
+        /// <param name="sender">object sending the event</param>
+        /// <param name="e">event arguments</param>
+        private void SensorColorFrameReady(object sender, ColorImageFrameReadyEventArgs e)
+        {
+            using (ColorImageFrame colorFrame = e.OpenColorImageFrame())
+            {
+                if (colorFrame != null)
+                {
+                    // Copy the pixel data from the image to a temporary array
+                    colorFrame.CopyPixelDataTo(this.colorPixels);
+
+                    // Write the pixel data into our bitmap
+                    this.colorBitmap.WritePixels(
+                        new Int32Rect(0, 0, this.colorBitmap.PixelWidth, this.colorBitmap.PixelHeight),
+                        this.colorPixels,
+                        this.colorBitmap.PixelWidth * sizeof(int),
+                        0);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Handles the user clicking on the screenshot button
+        /// </summary>
+        /// <param name="sender">object sending the event</param>
+        /// <param name="e">event arguments</param>
+        /// 
+        private void TakeSnapshot()
+        {
+            FaceName.Text = "Capturing....";
+            if (null == this.sensor)
+            {
+                this.statusBarText.Text = Properties.Resources.ConnectDeviceFirst;
+                return;
+            }
+
+            // create a png bitmap encoder which knows how to save a .png file
+            BitmapEncoder encoder = new PngBitmapEncoder();
+
+            // create frame from the writable bitmap and add to encoder
+            encoder.Frames.Add(BitmapFrame.Create(this.colorBitmap));
+
+            string time = System.DateTime.Now.ToString("hh'-'mm'-'ss", CultureInfo.CurrentUICulture.DateTimeFormat);
+
+         
+            string facepics = @"../../facepics";
+            string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures) + @"\captures\", "KinectSnapshot-" + time + ".png");
+
+          
+            try
+            {
+                using (FileStream fs = new FileStream(path, FileMode.Create))
+                {
+                    encoder.Save(fs);
+                }
+
+
+
+                MemoryStream msCapture = new MemoryStream();
+                using (FileStream file = new FileStream(path, FileMode.Open, FileAccess.Read))
+                    file.CopyTo(msCapture);
+
+
+                string[] aryfaces =  Directory.GetFiles(facepics, "*.png", SearchOption.TopDirectoryOnly);
+                foreach (string face in aryfaces)
+                {
+                    string strPersonName = Path.GetFileNameWithoutExtension(face);
+                    System.Diagnostics.Debug.WriteLine(face);
+
+                    MemoryStream msFacePic = new MemoryStream();
+                    using (FileStream file = new FileStream(face, FileMode.Open, FileAccess.Read))
+                        file.CopyTo(msFacePic);
+
+
+                    BackgroundWorker bg = new BackgroundWorker();
+                    bg.DoWork += new DoWorkEventHandler(bg_DoWork);
+                    bg.RunWorkerCompleted += new RunWorkerCompletedEventHandler(bg_RunWorkerCompleted);
+                    object[] parameters = new object[] { strPersonName, msCapture, msFacePic };
+                    bg.RunWorkerAsync(parameters);
+
+
+
+                }
+                i = 99;
+            
+            }
+            catch (IOException)
+            {
+                this.statusBarText.Text = string.Format("{0} {1}", Properties.Resources.ScreenshotWriteFailed, path);
+            }
+
+        }
+        private void bg_DoWork(object sender, DoWorkEventArgs e)
+        {
+            Console.WriteLine("Child thread starts");
+            object[] parameters = e.Argument as object[];
+            string strPersonName = CompareFaces(parameters[0].ToString(),parameters[1] as MemoryStream, parameters[2] as MemoryStream);
+            e.Result = strPersonName;
+        }
+
+        private void bg_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        {
+            object result = e.Result;
+
+            string strPersonName = e.Result.ToString();
+
+            switch (strPersonName)
+            {
+                case "Fail":
+                    FaceName.Text = "Failed to Compare Face...";
+                    i = 99;
+                    return;
+
+                case "Unknown":
+                    i = 99;
+                    FaceName.Text = "Unknown Face...";
+                    return;
+
+                default:
+                    FaceName.Text = "This is: " + strPersonName;
+                    i = 99;
+                    var twitter = new TwitterApi("UZketgx9yHq96nBw8fIBmkinf", "nEOCSppbDEQtlZRa9gcQbjPWnFrScp9hljnTdRJZw11rpdnngh", "14347215-mBkJHMqQksfMPNSiNtWtvHawckqvp1Qd4TX9rkToc", "Sn3R8KaZ7IaZh4kXj5LeHW2t1dfYNrCGtEVRCnI7PkOja");
+                    var response = twitter.Tweet(strPersonName + " has entered Eric's cube at: " + DateTime.Now.ToShortTimeString());
+                    Console.WriteLine(response);
+                    timer.Start();
+                    return;
+            }
+
+
+         
+
+           
+
+        }
+
+        private string CompareFaces(string strPersonName, MemoryStream msCapture, MemoryStream msFacePic)
+        {
+
+          
+
+                AmazonRekognitionClient rekognitionClient = new AmazonRekognitionClient("AKIAJMVGSK6QOHUYQJ6Q", "Dfcpere4zRT+CQh8gFGlXvwVTlo4kYcZqgMY9zRr", Amazon.RegionEndpoint.USEast1);
+
+
+                CompareFacesRequest req = new CompareFacesRequest();
+                Amazon.Rekognition.Model.Image src = new Amazon.Rekognition.Model.Image();
+                src.Bytes = msCapture;
+                req.SourceImage = src;
+
+     
+                Amazon.Rekognition.Model.Image trg = new Amazon.Rekognition.Model.Image();
+                trg.Bytes = msFacePic;
+
+                req.TargetImage = trg;
+            try
+            {
+                CompareFacesResponse compareFacesResult = rekognitionClient.CompareFaces(req);
+                List<CompareFacesMatch> faceDetails = compareFacesResult.FaceMatches;
+
+
+                ComparedFace face = null;
+                foreach (CompareFacesMatch match in faceDetails)
+                {
+                    face = match.Face;
+                    BoundingBox position = face.BoundingBox;
+                    System.Diagnostics.Debug.Write("Face at " + position.Left
+                            + " " + position.Top
+                            + " matches with " + face.Confidence
+                            + "% confidence.");
+                    if (face.Confidence > 75)
+                    {
+                        return strPersonName;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+               
+                return "Fail";
+            }
+
+
+            return "Unknown";
+
+
+        }
+
+    
+    }
+}
